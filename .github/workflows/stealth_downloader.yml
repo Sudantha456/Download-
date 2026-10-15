@@ -32,9 +32,9 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y ffmpeg aria2
 
-      - name: Install Stealth Tools & yt-dlp
+      - name: Install Playwright & yt-dlp
         run: |
-          pip install playwright playwright-stealth "yt-dlp[default,curl-cffi]"
+          pip install playwright "yt-dlp[default,curl-cffi]"
           playwright install chromium
           playwright install-deps chromium
 
@@ -43,43 +43,46 @@ jobs:
           python3 - << 'EOF'
           import asyncio
           from playwright.async_api import async_playwright
-          from playwright_stealth import stealth_async
-          import http.cookiejar
 
           async def solve_and_get_session(url):
               async with async_playwright() as p:
-                  # සැබෑ පරිශීලකයෙකු ලෙස පෙනෙන flags සහිතව Chromium දියත් කිරීම
+                  # Automation flags සම්පූර්ණයෙන්ම අක්‍රීය කර සැබෑ බ්‍රවුසරයක් ලෙස launch කිරීම
                   browser = await p.chromium.launch(
                       headless=True,
                       args=[
                           '--no-sandbox',
                           '--disable-blink-features=AutomationControlled',
-                          '--disable-infobars'
+                          '--disable-infobars',
+                          '--disable-dev-shm-usage',
+                          '--no-first-run',
+                          '--no-default-browser-check'
                       ]
                   )
                   context = await browser.new_context(
                       viewport={'width': 1920, 'height': 1080},
-                      user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36'
+                      user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36'
                   )
                   page = await context.new_page()
-                  await stealth_async(page)
+
+                  # navigator.webdriver අගය සැඟවීම
+                  await page.add_init_script("""
+                      Object.defineProperty(navigator, 'webdriver', {
+                          get: () => undefined
+                      });
+                  """)
 
                   print(f"[*] Navigating to: {url}")
                   await page.goto(url, wait_until='networkidle', timeout=60000)
 
-                  # Cloudflare challenge එක සමත් වීමට තත්පර 10ක් රැඳී සිටීම
                   print("[*] Waiting for potential challenges to clear...")
                   await asyncio.sleep(10)
 
-                  # Cookies ලබාගැනීම
                   cookies = await context.cookies()
                   ua = await page.evaluate("navigator.userAgent")
 
-                  # User-Agent ගොනුවකට ලිවීම
                   with open("user_agent.txt", "w") as f:
                       f.write(ua)
 
-                  # Netscape cookies.txt ආකෘතියට හැරවීම (yt-dlp කියවිය හැකි වන සේ)
                   with open("cookies.txt", "w") as f:
                       f.write("# Netscape HTTP Cookie File\n")
                       for c in cookies:
