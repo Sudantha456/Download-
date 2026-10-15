@@ -1,0 +1,128 @@
+name: Stealth Anti-Bot Video Downloader
+
+on:
+  workflow_dispatch:
+    inputs:
+      video_url:
+        description: 'Target Video Page URL'
+        required: true
+      output_name:
+        description: 'Output Video Name (e.g., test_video)'
+        default: 'stealth_download'
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  bypass_and_download:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install System Dependencies & FFmpeg
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg aria2
+
+      - name: Install Stealth Tools & yt-dlp
+        run: |
+          pip install playwright playwright-stealth "yt-dlp[default,curl-cffi]"
+          playwright install chromium
+          playwright install-deps chromium
+
+      - name: Bypass Bot Challenge via Stealth Headless Browser
+        run: |
+          python3 - << 'EOF'
+          import asyncio
+          from playwright.async_api import async_playwright
+          from playwright_stealth import stealth_async
+          import http.cookiejar
+
+          async def solve_and_get_session(url):
+              async with async_playwright() as p:
+                  # සැබෑ පරිශීලකයෙකු ලෙස පෙනෙන flags සහිතව Chromium දියත් කිරීම
+                  browser = await p.chromium.launch(
+                      headless=True,
+                      args=[
+                          '--no-sandbox',
+                          '--disable-blink-features=AutomationControlled',
+                          '--disable-infobars'
+                      ]
+                  )
+                  context = await browser.new_context(
+                      viewport={'width': 1920, 'height': 1080},
+                      user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36'
+                  )
+                  page = await context.new_page()
+                  await stealth_async(page)
+
+                  print(f"[*] Navigating to: {url}")
+                  await page.goto(url, wait_until='networkidle', timeout=60000)
+
+                  # Cloudflare challenge එක සමත් වීමට තත්පර 10ක් රැඳී සිටීම
+                  print("[*] Waiting for potential challenges to clear...")
+                  await asyncio.sleep(10)
+
+                  # Cookies ලබාගැනීම
+                  cookies = await context.cookies()
+                  ua = await page.evaluate("navigator.userAgent")
+
+                  # User-Agent ගොනුවකට ලිවීම
+                  with open("user_agent.txt", "w") as f:
+                      f.write(ua)
+
+                  # Netscape cookies.txt ආකෘතියට හැරවීම (yt-dlp කියවිය හැකි වන සේ)
+                  with open("cookies.txt", "w") as f:
+                      f.write("# Netscape HTTP Cookie File\n")
+                      for c in cookies:
+                          domain = c['domain']
+                          flag = "TRUE" if domain.startswith(".") else "FALSE"
+                          path = c['path']
+                          secure = "TRUE" if c.get('secure', False) else "FALSE"
+                          expires = str(int(c.get('expires', -1)))
+                          if expires == "-1":
+                              expires = "0"
+                          name = c['name']
+                          value = c['value']
+                          f.write(f"{domain}\t{flag}\t{path}\t{secure}\t{expires}\t{name}\t{value}\n")
+
+                  print("[✓] Successfully captured clearance cookies and user agent!")
+                  await browser.close()
+
+          import sys
+          target_url = "${{ github.event.inputs.video_url }}"
+          asyncio.run(solve_and_get_session(target_url))
+          EOF
+
+      - name: Download Video using Extracted Clearance & Impersonation
+        run: |
+          UA=$(cat user_agent.txt)
+          echo "Using Extracted User-Agent: $UA"
+
+          yt-dlp "${{ github.event.inputs.video_url }}" \
+            --impersonate chrome \
+            --user-agent "$UA" \
+            --cookies cookies.txt \
+            --add-header "Accept-Language: en-US,en;q=0.9" \
+            --add-header "Sec-Fetch-Mode: navigate" \
+            -f "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best" \
+            --merge-output-format mp4 \
+            --external-downloader aria2c \
+            --external-downloader-args "-x 16 -s 16 -k 1M" \
+            -o "${{ github.event.inputs.output_name }}.mp4"
+
+      - name: Upload Downloaded Video to Releases
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release view stealth-downloads || gh release create stealth-downloads --title "Stealth Downloads" --notes "Downloaded via Anti-Bot Bypass"
+          gh release upload stealth-downloads "${{ github.event.inputs.output_name }}.mp4" --clobber
+          
